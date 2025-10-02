@@ -33,7 +33,7 @@ indir <- file.path("data", "02_cleaned_data", "cleaned_data.parquet")
 # Creating output folders, if they don't already exist
 outdir <- file.path("data", "03_prepped_inputs")
 for (reg in reg_names){
-  dir.create(paste0(outdir, reg, ".parquet"),
+  dir.create(paste0(file.path(outdir, reg), ".parquet"),
              recursive = TRUE)
 }
 

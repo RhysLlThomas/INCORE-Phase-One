@@ -11,6 +11,11 @@ source('src/utils.R')
 
 filepath <- "INPUT DATA FILEPATH"
 
+# Existing beneficiary ID column should be unique to individuals by year.
+# Individuals can appear multiple times in the data, but beneficiary ID should
+# be the same for a single individual
+beneficiary_id_col <- "BENE_ID" 
+
 # Existing admission ID column is not necessary, but can be used to assign admission IDs
 # Data should be unique on admission ID, that is, one row per admission
 admission_id_cols <- NULL 
@@ -73,18 +78,21 @@ dir.create(outdir, recursive = TRUE)
 
 # Read in raw data, using custom function to handle various file types
 # Supports reading .csv, .parquet, .dta, .sav, .sas7bdat, .xls, .xlsx, and .rds
-df <- read_data(filepath) %>% head(1000)
+df <- read_data(filepath)
 
 # Subsetting data to specified columns only
-df <- subset_cols(df, select_cols=c(admission_id_cols, year_col, age_col, sex_col,
+df <- subset_cols(df, select_cols=c(beneficiary_id_col, admission_id_cols, year_col, age_col, sex_col,
                                     discharge_date_col, admission_date_col,
                                     birth_date_col,icd_ver_col, los_col, icd_cols))
 #---------------------
 ##### Processing #####
 #---------------------
 
+# Create column for bene_id
+df <- get_unique_id(df, unique_id_cols=beneficiary_id_col, col_name="bene_id")
+
 # Create column for admission_id
-df <- get_admission_id(df, admission_id_cols=admission_id_cols)
+df <- get_unique_id(df, unique_id_cols=admission_id_cols, col_name="admission_id")
 
 # Create column for year_id
 df <- get_year_id(df, year_col=year_col, discharge_date_col=discharge_date_col)
@@ -111,7 +119,7 @@ df <- get_conditions(df, icd_cols=icd_cols, icd_condition_map=icd_condition_map)
 # Selecting necessary columns and saving out data as parquet file
 # File is partitioned by sex_id and age_start, maximum of 2.5M rows per file
 df %>%
-  select(admission_id, year_id, sex_id, age_start, icd_ver, icd_level, icd_code, condition, los) %>%
+  select(bene_id, admission_id, year_id, sex_id, age_start, icd_ver, icd_level, icd_code, condition, los) %>%
   group_by(year_id, age_start, sex_id) %>%
   write_dataset(file.path(outdir,'transformed_data.parquet'),
                 basename_template=paste0(file_path_sans_ext(basename(filepath)),'_{{i}}.parquet'),

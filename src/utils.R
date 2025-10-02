@@ -63,33 +63,33 @@ subset_cols <- function(df, select_cols){
   return (df)
 }
 
-get_admission_id <- function(df, admission_id_cols=NULL){
+get_unique_id <- function(df, unique_id_cols=NULL, col_name=NULL){
   
-  # If admission_id_cols are provided...
-  if (!is.null(admission_id_cols)) {
+  # If unique_id_cols are provided...
+  if (!is.null(unique_id_cols)) {
     
-    message("Using ",  paste(admission_id_cols, collapse = ", "), " columns to get year...")
+    message("Using ",  paste(unique_id_cols, collapse = ", "), " columns to get ", col_name, "...")
     
     # Create an integer id for each unique grouping of the admission_id_cols
     df <- df %>%
-      group_by(across(all_of(admission_id_cols))) %>%
-      mutate(admission_id = cur_group_id()) %>%
+      group_by(across(all_of(unique_id_cols))) %>%
+      mutate(!!col_name := cur_group_id()) %>%
       ungroup()
     
   } else {
     
-    message("No admission_id_cols provided. Assigning unique interger as admission ID for each row.")
+    message("No unique_id_cols provided. Assigning unique integer as ", col_name, " for each row.")
     
-    # If no admission_id_cols are provided, use an integer as admission_id for each row in the data
+    # If no unique_id_cols are provided, use an integer for each row in the data
     df <- df %>%
-      mutate(admission_id = row_number())
+      mutate(!!col_name := row_number())
   }
   return (df)
 }
 
 get_year_id <- function(df, year_col=NULL, discharge_date_col=NULL){
   
-  # Checking that either year_col or discharge_date_colar supplied
+  # Checking that either year_col or discharge_date_col are supplied
   if (is.null(year_col) & is.null(discharge_date_col)){
     stop("Missing required columns. You must provided either a single length of stay column, or discharge date and admission date columns.")
   } else if (!is.null(year_col)) {
@@ -287,6 +287,14 @@ get_conditions <- function(df, icd_cols, icd_condition_map){
     cols <- append(cols, str_subset(colnames(df), col))
   }
   
+  # Ensure all ICD code columns are character type, remove all non-alphanumeric
+  # characters, and convert to uppercase
+  df <- df %>%
+    mutate(across(all_of(cols),
+                  ~ as.character(.x) %>%
+                    str_remove_all("[^[:alnum:]]") %>% 
+                    str_to_upper()))
+  
   # Setting names with new standard name  (icd_#)
   cols <- setNames(cols, paste0("icd_", seq_along(cols)))
   
@@ -298,13 +306,68 @@ get_conditions <- function(df, icd_cols, icd_condition_map){
     drop_na(icd_code, icd_level) %>%
     mutate(icd_level = factor(icd_level, levels = names(cols)))
   
-  # Join ICD map onto dataframe, using ICD map version and ICD code
-  # Dropping anything that does not map in our ICD map
-  df <- df %>%
-    left_join(icd_condition_map, by = c("icd_ver"="icd_ver", "icd_code"="icd_code")) %>%
-    drop_na(condition)
+  # Finding all valid ICD lengths in icd_condition_map and sorting
+  icd_lengths <- nchar(icd_condition_map$icd_code) %>%
+    unique() %>%
+    na.omit() %>%
+    sort(decreasing = TRUE)
   
-  return (df)
+  # Initializing dataframes
+  unmapped_data <- df
+  mapped_data <- tibble()
+  
+  # Map conditions to ICD codes. This process will attempt to map an ICD code
+  # to a condition at the most specific level (ICD code length corresponding to
+  # specificity). If an ICD code does not map, it is truncated and the mapping 
+  # is attempted again. This is repeated until not valid codes are available to
+  # map to
+  for (len in icd_lengths) {
+    
+    # Subset map to conditions that map to current ICD length
+    current_icd_map <- icd_condition_map %>% filter(nchar(icd_code)==len)
+    
+    # Subset data to rows with ICD codes of current length or greater
+    current_unmapped <- unmapped_data %>%
+      filter(nchar(icd_code) >= len) %>%
+      mutate(trunc_code = substr(icd_code, 1, len))
+    
+    # Any data shorter than current length can be skipped in this loop
+    short_data <- unmapped_data %>%
+      filter(nchar(icd_code) <  len)
+    
+    # If no data of current length, then skip this iteration
+    if (nrow(current_unmapped) == 0){
+      unmapped_data <- short_data
+      next
+    }
+    
+    # Attempt to join conditions onto current length of ICD code
+    joined <- current_unmapped %>%
+      left_join(current_icd_map, by = c("icd_ver" = "icd_ver", "trunc_code" = "icd_code"))
+    
+    # Keep any data that mapped to a condition
+    current_mapped <- joined %>%
+      filter(!is.na(condition)) %>%
+      select(-trunc_code)
+    
+    # Any data that did not map to a condition is unmapped
+    current_unmapped <- joined %>%
+      filter(is.na(condition)) %>%
+      select(-trunc_code, -condition)
+    
+    # Store mapped data and attempt another truncated mapping with unmapped data
+    mapped_data <- bind_rows(mapped_data, current_mapped)
+    unmapped_data <- bind_rows(short_data, current_unmapped)
+  }
+  
+  # Saving out unmapped data, for reference
+  unmapped_data %>%
+    group_by(icd_code) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    arrange(desc(count)) %>%
+    write.csv(file.path("maps", "unmapped_icd_codes.csv"), row.names = FALSE)
+  
+  return(mapped_data)
 }
 
 #########################
@@ -422,17 +485,30 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
   
   # Reassigning NEC conditions to family-specific condition
   # Using family-specific proportions for random reassignment
-  nec_rows <- df %>%
+  nec_merged <- df %>%
     filter(NEC_gc_flag=="NEC") %>%
     left_join(condition_families, by=c('condition')) %>%
     left_join(fam_pc, by = c("family"), relationship="many-to-many") %>%
-    drop_na(condition.y, prop) %>%
-    group_by(admission_id, icd_level) %>%
-    summarize(
-      condition = sample(condition.y, 1, prob = prop) 
-    ) %>%
-    ungroup()
+    drop_na(condition.y, prop)
   
+  if (nrow(nec_merged) == 0){
+    nec_rows <- df %>%
+      filter(NEC_gc_flag=="NEC") %>%
+      left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship="many-to-many") %>%
+      group_by(admission_id, icd_level) %>%
+      summarize(
+        condition = sample(condition.y, 1, prob = prop) 
+      ) %>%
+      ungroup()
+  }
+  else {
+    nec_rows <- nec_merged%>%
+      group_by(admission_id, icd_level) %>%
+      summarize(
+        condition = sample(condition.y, 1, prob = prop) 
+      ) %>%
+      ungroup()
+  }
   # Reassigning _gc conditions to any condition
   # Using age/sex/year-specific proportions for random reassignment
   gc_rows <- df %>%
@@ -459,95 +535,138 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
 ##########################
 
 
-create_reg_matrices <- function(DT, years, ages, conditions, families) {
+create_reg_matrices <- function(DT, years, ages, conditions, families, level = c("admission", "person_year")) {
   
-  # Creating a datatable that's unique for each admission_id and contains age/year/los
-  DT_admissions <- DT[, .SD[1], by = admission_id, .SDcols = c("age_start", "year_id", "los")]
-  unique_admissions = unique(DT$admission_id)
+  # Using provided regression level, defaults to admission
+  level <- match.arg(level)
+  
+  # Creating a datatable that's unique for either admission or person-year
+  # and contains age/year/los/number of admissions
+  if (level == "admission") {
+    
+    DT_base <- DT[,
+                  .SD[1],
+                  by = admission_id,
+                  .SDcols = c("age_start", "year_id", "los")]
+    row_id <- "admission_id"
+    n_admissions_vec <- NULL
+    
+  } else if (level == "person_year") {
+    
+    DT_base <- DT[, .(
+      los = sum(los, na.rm = TRUE),
+      age_start = age_start[1],
+      n_admissions = .N
+    ), by = .(bene_id, year_id)]
+    DT_base[, person_year_id := paste0(bene_id, "_", year_id)]
+    row_id <- "person_year_id"
+    n_admissions_vec <- DT_base$n_admissions
+  }
   
   # Converting age_start and year_id to factors/dummies
-  DT_admissions[, age_start := factor(age_start, levels = ages)]
-  DT_admissions[, year_id := factor(year_id, levels = years)]
-
-  # Creating datatable that's unique on admission_id with age_start encoded as
-  # a dummy variable
-  DT_age <- as.data.table(cbind(
-    admission_id = DT_admissions$admission_id,
-    model.matrix(~ age_start - 1, data = DT_admissions)
-    ))
+  DT_base[, age_start := factor(age_start, levels = ages)]
+  DT_base[, year_id := factor(year_id, levels = years)]
   
-  # Creating datatable that's unique on admission_id with year_id encoded as
-  # a dummy variable
-  DT_year <- as.data.table(cbind(
-    admission_id = DT_admissions$admission_id,
-    model.matrix(~ year_id - 1, data = DT_admissions)
+  # Creating datatable for dummy-encoded age_start variable
+  DT_age <- as.data.table(cbind(
+    id = DT_base[[row_id]],
+    model.matrix(~ age_start - 1, data = DT_base)
   ))
   
-  # Cross-joining all conditions and admissions IDs
-  full_grid_cond <- CJ(admission_id = unique_admissions, condition = conditions)
+  # Creating datatable for dummy-encoded year_id variable
+  DT_year <- as.data.table(cbind(
+    id = DT_base[[row_id]],
+    model.matrix(~ year_id - 1, data = DT_base)
+  ))
   
-  # Finding all observed combinations of condition and admission_id
-  observed_pairs <- unique(DT[, .(admission_id, condition)])
+  # Cross-joining all conditions and row IDs (admission/person-year) to find
+  # all observed combinations in data. Creating a datatable that's unique on 
+  # row ID and contains a column for each condition. Contains whether or not a
+  # condition was seen for a given admission/person-year (1 or 0)
+  if (level == "admission") {
+    full_grid_cond <- CJ(admission_id = unique(DT$admission_id),
+                         condition = conditions)
+    observed_pairs <- unique(DT[, .(admission_id, condition)])
+    setkey(full_grid_cond, admission_id, condition)
+    setkey(observed_pairs, admission_id, condition)
+    full_grid_cond[, present := 0L]
+    full_grid_cond[observed_pairs, present := 1L]
+    DT_condition <- dcast(full_grid_cond,
+                          admission_id ~ condition,
+                          value.var = "present",
+                          fill = 0L)
+    cond_id <- "admission_id"
+  } else {
+    full_grid_cond <- CJ(
+      bene_id = unique(DT$bene_id),
+      year_id = unique(DT$year_id),
+      condition = conditions
+    )
+    observed_pairs <- unique(DT[, .(bene_id, year_id, condition)])
+    setkey(full_grid_cond, bene_id, year_id, condition)
+    setkey(observed_pairs, bene_id, year_id, condition)
+    full_grid_cond[, present := 0L]
+    full_grid_cond[observed_pairs, present := 1L]
+    DT_condition <- dcast(full_grid_cond,
+                          bene_id + year_id ~ condition,
+                          value.var = "present",
+                          fill = 0L)
+    DT_condition[, id := paste0(bene_id, "_", year_id)]
+    cond_id <- "id"
+  }
   
-  # Marking pairs of condition and admission_id that were observed
-  full_grid_cond[, present := 0L]
-  setkey(full_grid_cond, admission_id, condition)
-  setkey(observed_pairs, admission_id, condition)
-  full_grid_cond[observed_pairs, present := 1L]
+  # Cross-joining all condition families and row IDs (admission/person-year)
+  # to find all observed combinations in data. Creating a datatable that's
+  # unique on  row ID and contains a column for each condition family. Contains
+  # whether or not a condition was seen for a given admission/person-year
+  # (1 or 0)
+  if (level == "admission") {
+    full_grid_family <- CJ(admission_id = unique(DT$admission_id),
+                           family = families)
+    observed_fam_pairs <- unique(DT[, .(admission_id, family)])
+    setkey(full_grid_family, admission_id, family)
+    setkey(observed_fam_pairs, admission_id, family)
+    full_grid_family[, present := 0L]
+    full_grid_family[observed_fam_pairs, present := 1L]
+    DT_family <- dcast(full_grid_family, admission_id ~ family, value.var = "present", fill = 0L)
+    fam_id <- "admission_id"
+  } else {
+    full_grid_family <- CJ(
+      bene_id = unique(DT$bene_id),
+      year_id = unique(DT$year_id),
+      family = families
+    )
+    observed_fam_pairs <- unique(DT[, .(bene_id, year_id, family)])
+    setkey(full_grid_family, bene_id, year_id, family)
+    setkey(observed_fam_pairs, bene_id, year_id, family)
+    full_grid_family[, present := 0L]
+    full_grid_family[observed_fam_pairs, present := 1L]
+    DT_family <- dcast(full_grid_family, bene_id + year_id ~ family, value.var = "present", fill = 0L)
+    DT_family[, id := paste0(bene_id, "_", year_id)]
+    fam_id <- "id"
+  }
   
-  # Pivoting from long to wide on condition, creating a datatable that's unique
-  # on admission_id and contains a column for each condition. Contains whether 
-  # or not a condition was seen for a given admission_id (1 or 0)
-  DT_condition <- dcast(
-    full_grid_cond,
-    admission_id ~ condition,
-    value.var = "present",
-    fill = 0L
-  )
-  
-  # Cross-joining all condition families and admissions IDs
-  full_grid_family <- CJ(admission_id = unique_admissions, family = families)
-  
-  # Finding all observed combinations of condition and admission_id
-  observed_fam_pairs <- unique(DT[, .(admission_id, family)])
-  
-  # Marking pairs of condition family and admission_id that were observed
-  full_grid_family[, present := 0L]
-  setkey(full_grid_family, admission_id, family)
-  setkey(observed_fam_pairs, admission_id, family)
-  full_grid_family[observed_fam_pairs, present := 1L]
-  
-  # Pivoting from long to wide on condition, creating a datatable that's unique
-  # on admission_id and contains a column for each condition family. Contains 
-  # whether or not a condition family was seen for a given admission_id (1 or 0)
-  DT_family <- dcast(
-    full_grid_family,
-    admission_id ~ family,
-    value.var = "present",
-    fill = 0L
-  )
-  
-  # Sorting by admission_id to ensure everything is aligned
-  setkey(DT_admissions, admission_id)
-  setkey(DT_condition, admission_id)
-  setkey(DT_family, admission_id)
-  setkey(DT_age, admission_id)
-  setkey(DT_year, admission_id)
+  # Sorting by ids to ensure everything is aligned
+  setkeyv(DT_base, row_id)
+  setkeyv(DT_age, "id")
+  setkeyv(DT_year, "id")
+  setkeyv(DT_condition, cond_id)
+  setkeyv(DT_family, fam_id)
   
   # Converting each encoded datatable to a sparse matrix
-  condition_mat <- as(Matrix(as.matrix(DT_condition[, -1, with=FALSE]), sparse=TRUE), "dgCMatrix")
-  family_mat  <- as(Matrix(as.matrix(DT_family[, -1, with=FALSE]), sparse=TRUE), "dgCMatrix")
-  age_mat  <- as(Matrix(as.matrix(DT_age[, -1, with=FALSE]), sparse=TRUE), "dgCMatrix")
-  year_mat <- as(Matrix(as.matrix(DT_year[, -1, with=FALSE]), sparse=TRUE), "dgCMatrix")
+  condition_mat <- as(Matrix(apply(as.matrix(DT_condition[, !..cond_id, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
+  family_mat <- as(Matrix(apply(as.matrix(DT_family[, !..fam_id, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
+  age_mat <- as(Matrix(apply(as.matrix(DT_age[, -1, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
+  year_mat <- as(Matrix(apply(as.matrix(DT_year[, -1, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
   
-  # Creating condition-age interaction matrix
+  # Creating condition family-age interaction matrix
   family_age_list <- list()
   family_age_names <- character()
   idx <- 1
   for (k in 1:ncol(age_mat)) {
     for (j in 1:ncol(family_mat)) {
       family_age_list[[idx]] <- family_mat[, j] * age_mat[, k]
-      family_age_names[idx] <- paste0(colnames(age_mat)[k], "__", colnames(family_mat)[j])
+      family_age_names[idx] <- paste0(csolnames(age_mat)[k], "__", colnames(family_mat)[j])
       idx <- idx + 1
     }
   }
@@ -570,14 +689,32 @@ create_reg_matrices <- function(DT, years, ages, conditions, families) {
   
   # Creating regression matrix for each equation and adding to list
   reg_matrices <- list(
-    age_eq = cbind(los = DT_admissions$los, age_mat, year_mat),
-    condition_eq = cbind(los = DT_admissions$los, condition_mat, year_mat),
-    family_age_eq = cbind(los = DT_admissions$los, family_mat, age_mat, family_age_mat, year_mat),
-    family_pair_eq = cbind(los = DT_admissions$los, family_mat, family_pair_mat, year_mat)
+    age_eq = if (!is.null(n_admissions_vec)) {
+      cbind(los = DT_base$los, n_admissions = n_admissions_vec, age_mat, year_mat)
+      }
+    else {
+      cbind(los = DT_base$los, age_mat, year_mat)
+      },
+    condition_eq = if (!is.null(n_admissions_vec)) {
+      cbind(los = DT_base$los, n_admissions = n_admissions_vec, condition_mat, year_mat)
+      } else {
+        cbind(los = DT_base$los, condition_mat, year_mat)
+        },
+    family_age_eq = if (!is.null(n_admissions_vec)) {
+      cbind(los = DT_base$los, n_admissions = n_admissions_vec, family_mat, age_mat, family_age_mat, year_mat)
+      } else {
+        cbind(los = DT_base$los, family_mat, age_mat, family_age_mat, year_mat)
+        },
+    family_pair_eq = if (!is.null(n_admissions_vec)) {
+      cbind(los = DT_base$los, n_admissions = n_admissions_vec, family_mat, family_pair_mat, year_mat)
+    } else {
+        cbind(los = DT_base$los, family_mat, family_pair_mat, year_mat)
+      }
   )
   
-  return (reg_matrices)
+  return(reg_matrices)
 }
+
 
 chunked_save <- function(sparse_mat, out_file, chunk_size = 100000) {
   

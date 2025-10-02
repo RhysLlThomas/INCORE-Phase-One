@@ -78,7 +78,7 @@ for (i in 1:nrow(partitions)){
   # Selecting necessary columns and saving out data as parquet file
   # File is partitioned by sex_id and age_start, maximum of 2.5M rows per file
   df %>%
-    select(admission_id, year_id, sex_id, age_start, icd_level, condition, family, is_primary, los) %>%
+    select(bene_id, admission_id, year_id, sex_id, age_start, icd_level, condition, family, is_primary, los) %>%
     group_by(year_id, age_start, sex_id) %>%
     write_dataset(file.path(outdir, "cleaned_data.parquet"),
                   basename_template=paste(c(year, age, sex, "{{i}}.parquet"), collapse='_'),
