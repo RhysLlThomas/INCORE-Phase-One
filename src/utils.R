@@ -483,34 +483,40 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
       )
     )
   
+  
   # Reassigning NEC conditions to family-specific condition
   # Using family-specific proportions for random reassignment
-  nec_merged <- df %>%
-    filter(NEC_gc_flag=="NEC") %>%
-    left_join(condition_families, by=c('condition')) %>%
-    left_join(fam_pc, by = c("family"), relationship="many-to-many") %>%
-    drop_na(condition.y, prop)
+  nec_joined <- df %>%
+    filter(NEC_gc_flag == "NEC") %>%
+    left_join(condition_families, by = c("condition")) %>%
+    left_join(fam_pc, by = c("family"), relationship = "many-to-many")
   
-  if (nrow(nec_merged) == 0){
-    nec_rows <- df %>%
-      filter(NEC_gc_flag=="NEC") %>%
-      left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship="many-to-many") %>%
-      group_by(admission_id, icd_level) %>%
-      summarize(
-        condition = sample(condition.y, 1, prob = prop) 
-      ) %>%
-      ungroup()
+  # Finding rows that matched to a family in primary_counts
+  nec_success <- nec_joined %>%
+    filter(!is.na(condition.y) & !is.na(prop))
+  
+  # Finding rows that did not match to a family in primary_counts
+  nec_fail <- nec_joined %>%
+    filter(is.na(condition.y) | is.na(prop)) %>%
+    select(-c(condition.y, family, n, prop)) %>%
+    rename(condition = condition.x)
+  
+  # If there are rows that cannot go through family-specific redistribution,
+  # Then we use age/sex/year-specific proportions for random reassignment
+  # These proportions are NOT family-specific
+  if (nrow(nec_fail) > 0) {
+    nec_fail <- nec_fail %>%
+      left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship = "many-to-many")
   }
-  else {
-    nec_rows <- nec_merged%>%
-      group_by(admission_id, icd_level) %>%
-      summarize(
-        condition = sample(condition.y, 1, prob = prop) 
-      ) %>%
-      ungroup()
-  }
+  
+  # Combining all NEC rows and redistributing based on joined probabilities
+  nec_rows <- bind_rows(nec_success, nec_fail) %>%
+    group_by(admission_id, icd_level) %>%
+    summarize(condition = sample(condition.y, 1, prob = prop)) %>%
+    ungroup()
+  
   # Reassigning _gc conditions to any condition
-  # Using age/sex/year-specific proportions for random reassignment
+  # Using age/sex/year-specific proportions for probabilistic reassignment
   gc_rows <- df %>%
     filter(NEC_gc_flag=="gc") %>%
     left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship="many-to-many") %>%
@@ -567,97 +573,61 @@ create_reg_matrices <- function(DT, years, ages, conditions, families, level = c
   DT_base[, age_start := factor(age_start, levels = ages)]
   DT_base[, year_id := factor(year_id, levels = years)]
   
-  # Creating datatable for dummy-encoded age_start variable
-  DT_age <- as.data.table(cbind(
-    id = DT_base[[row_id]],
-    model.matrix(~ age_start - 1, data = DT_base)
-  ))
-  
-  # Creating datatable for dummy-encoded year_id variable
-  DT_year <- as.data.table(cbind(
-    id = DT_base[[row_id]],
-    model.matrix(~ year_id - 1, data = DT_base)
-  ))
-  
-  # Cross-joining all conditions and row IDs (admission/person-year) to find
-  # all observed combinations in data. Creating a datatable that's unique on 
-  # row ID and contains a column for each condition. Contains whether or not a
-  # condition was seen for a given admission/person-year (1 or 0)
-  if (level == "admission") {
-    full_grid_cond <- CJ(admission_id = unique(DT$admission_id),
-                         condition = conditions)
-    observed_pairs <- unique(DT[, .(admission_id, condition)])
-    setkey(full_grid_cond, admission_id, condition)
-    setkey(observed_pairs, admission_id, condition)
-    full_grid_cond[, present := 0L]
-    full_grid_cond[observed_pairs, present := 1L]
-    DT_condition <- dcast(full_grid_cond,
-                          admission_id ~ condition,
-                          value.var = "present",
-                          fill = 0L)
-    cond_id <- "admission_id"
-  } else {
-    full_grid_cond <- CJ(
-      bene_id = unique(DT$bene_id),
-      year_id = unique(DT$year_id),
-      condition = conditions
+  # Function to directly construct a sparse matrix from rows in a datatable
+  create_sparse_mat <- function(DT, id_col, feature_col, all_features) {
+    
+    # Convert IDs and feature pairs to indexes
+    DT[, id_idx := as.integer(factor(get(id_col)))]
+    DT[, feat_idx := match(get(feature_col), all_features)]
+    
+    # Get dimensions
+    n_ids <- length(unique(DT[[id_col]]))
+    n_feats <- length(all_features)
+    
+    if (any(is.na(DT$feat_idx))) {
+      print(id_col)
+      print(feature_col)
+      print(all_features)
+    }
+    
+    # Create sparse matrix
+    sparse_mat <- sparseMatrix(
+      i = DT$id_idx,
+      j = DT$feat_idx,
+      x = 1,
+      dims = c(n_ids, n_feats),
+      dimnames = list(NULL, all_features)
     )
-    observed_pairs <- unique(DT[, .(bene_id, year_id, condition)])
-    setkey(full_grid_cond, bene_id, year_id, condition)
-    setkey(observed_pairs, bene_id, year_id, condition)
-    full_grid_cond[, present := 0L]
-    full_grid_cond[observed_pairs, present := 1L]
-    DT_condition <- dcast(full_grid_cond,
-                          bene_id + year_id ~ condition,
-                          value.var = "present",
-                          fill = 0L)
-    DT_condition[, id := paste0(bene_id, "_", year_id)]
-    cond_id <- "id"
+    return(sparse_mat)
   }
   
-  # Cross-joining all condition families and row IDs (admission/person-year)
-  # to find all observed combinations in data. Creating a datatable that's
-  # unique on  row ID and contains a column for each condition family. Contains
-  # whether or not a condition was seen for a given admission/person-year
-  # (1 or 0)
+  # Creating one-hot encoded age sparse matrix
+  age_pairs <- DT_base[, .(id = get(row_id), age_start)]
+  age_mat  <- create_sparse_mat(age_pairs,  "id", "age_start", ages)
+  
+  # Creating one-hot encoded year sparse matrix
+  year_pairs <- DT_base[, .(id = get(row_id), year_id)]
+  year_mat <- create_sparse_mat(year_pairs, "id", "year_id",   years)
+  
+  # Creating one-hot encoded condition sparse matrix
   if (level == "admission") {
-    full_grid_family <- CJ(admission_id = unique(DT$admission_id),
-                           family = families)
-    observed_fam_pairs <- unique(DT[, .(admission_id, family)])
-    setkey(full_grid_family, admission_id, family)
-    setkey(observed_fam_pairs, admission_id, family)
-    full_grid_family[, present := 0L]
-    full_grid_family[observed_fam_pairs, present := 1L]
-    DT_family <- dcast(full_grid_family, admission_id ~ family, value.var = "present", fill = 0L)
-    fam_id <- "admission_id"
+    cond_pairs <- unique(DT[, .(admission_id, condition)])
+    condition_mat <- create_sparse_mat(cond_pairs, "admission_id", "condition", conditions)
   } else {
-    full_grid_family <- CJ(
-      bene_id = unique(DT$bene_id),
-      year_id = unique(DT$year_id),
-      family = families
-    )
-    observed_fam_pairs <- unique(DT[, .(bene_id, year_id, family)])
-    setkey(full_grid_family, bene_id, year_id, family)
-    setkey(observed_fam_pairs, bene_id, year_id, family)
-    full_grid_family[, present := 0L]
-    full_grid_family[observed_fam_pairs, present := 1L]
-    DT_family <- dcast(full_grid_family, bene_id + year_id ~ family, value.var = "present", fill = 0L)
-    DT_family[, id := paste0(bene_id, "_", year_id)]
-    fam_id <- "id"
+    cond_pairs <- unique(DT[, .(bene_id, year_id, condition)])
+    cond_pairs[, id := paste0(bene_id, "_", year_id)]
+    condition_mat <- create_sparse_mat(cond_pairs, "id", "condition", conditions)
   }
   
-  # Sorting by ids to ensure everything is aligned
-  setkeyv(DT_base, row_id)
-  setkeyv(DT_age, "id")
-  setkeyv(DT_year, "id")
-  setkeyv(DT_condition, cond_id)
-  setkeyv(DT_family, fam_id)
-  
-  # Converting each encoded datatable to a sparse matrix
-  condition_mat <- as(Matrix(apply(as.matrix(DT_condition[, !..cond_id, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
-  family_mat <- as(Matrix(apply(as.matrix(DT_family[, !..fam_id, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
-  age_mat <- as(Matrix(apply(as.matrix(DT_age[, -1, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
-  year_mat <- as(Matrix(apply(as.matrix(DT_year[, -1, with=FALSE]), 2, as.numeric), sparse=TRUE), "dgCMatrix")
+  # Creating one-hot condition family sparse matrix
+  if (level == "admission") {
+    fam_pairs <- unique(DT[, .(admission_id, family)])
+    family_mat <- create_sparse_mat(fam_pairs, "admission_id", "family", families)
+  } else {
+    fam_pairs <- unique(DT[, .(bene_id, year_id, family)])
+    fam_pairs[, id := paste0(bene_id, "_", year_id)]
+    family_mat <- create_sparse_mat(fam_pairs, "id", "family", families)
+  }
   
   # Creating condition family-age interaction matrix
   family_age_list <- list()
@@ -666,7 +636,7 @@ create_reg_matrices <- function(DT, years, ages, conditions, families, level = c
   for (k in 1:ncol(age_mat)) {
     for (j in 1:ncol(family_mat)) {
       family_age_list[[idx]] <- family_mat[, j] * age_mat[, k]
-      family_age_names[idx] <- paste0(csolnames(age_mat)[k], "__", colnames(family_mat)[j])
+      family_age_names[idx] <- paste0(colnames(age_mat)[k], "__", colnames(family_mat)[j])
       idx <- idx + 1
     }
   }
@@ -691,29 +661,29 @@ create_reg_matrices <- function(DT, years, ages, conditions, families, level = c
   reg_matrices <- list(
     age_eq = if (!is.null(n_admissions_vec)) {
       cbind(los = DT_base$los, n_admissions = n_admissions_vec, age_mat, year_mat)
-      }
-    else {
+    } else {
       cbind(los = DT_base$los, age_mat, year_mat)
-      },
+    },
     condition_eq = if (!is.null(n_admissions_vec)) {
       cbind(los = DT_base$los, n_admissions = n_admissions_vec, condition_mat, year_mat)
-      } else {
-        cbind(los = DT_base$los, condition_mat, year_mat)
-        },
+    } else {
+      cbind(los = DT_base$los, condition_mat, year_mat)
+    },
     family_age_eq = if (!is.null(n_admissions_vec)) {
       cbind(los = DT_base$los, n_admissions = n_admissions_vec, family_mat, age_mat, family_age_mat, year_mat)
-      } else {
-        cbind(los = DT_base$los, family_mat, age_mat, family_age_mat, year_mat)
-        },
+    } else {
+      cbind(los = DT_base$los, family_mat, age_mat, family_age_mat, year_mat)
+    },
     family_pair_eq = if (!is.null(n_admissions_vec)) {
       cbind(los = DT_base$los, n_admissions = n_admissions_vec, family_mat, family_pair_mat, year_mat)
     } else {
-        cbind(los = DT_base$los, family_mat, family_pair_mat, year_mat)
-      }
+      cbind(los = DT_base$los, family_mat, family_pair_mat, year_mat)
+    }
   )
   
   return(reg_matrices)
 }
+
 
 
 chunked_save <- function(sparse_mat, out_file, chunk_size = 100000) {
@@ -721,25 +691,24 @@ chunked_save <- function(sparse_mat, out_file, chunk_size = 100000) {
   # Finding number of rows to iterate over
   n_rows <- nrow(sparse_mat)
   
-  # Initializing row counter
-  row <- 1
+  # Initializing row index counter
+  idx_start <- 1
   
-  while (row <= n_rows) {
+  # Saving chunks of data...
+  while (idx_start <= n_rows) {
     
-    # Get the row number to end at
-    chunk_rows <- min(row + chunk_size - 1, n_rows)
+    # Get the row index to end at for current chunk
+    idx_end <- min(idx_start + chunk_size - 1, n_rows)
     
-    # Extract chunk of rows, starting with row and ending with chunk_rows
-    chunk_mat <- sparse_mat[row:chunk_rows, , drop = FALSE]
-    
-    # Convert to data.frame format (i.e. a dense matrix)
-    # This data.frame can be fairly large, hence the need for chunking
-    chunk_DT <- as.data.frame(as.matrix(chunk_mat))
+    # Extract chunk of rows, between idx_start and idx_end. Converting from a
+    # sparse matrix to a dataframe in order to save out
+    chunked_DT <- as.data.frame(as.matrix(sparse_mat[idx_start:idx_end, , drop = FALSE]))
     
     # Saving to parquet format
-    write_parquet(chunk_DT, sub("\\.parquet$", paste0("_chunk", row, ".parquet"), out_file))
+    write_parquet(chunked_DT,
+                  sub("\\.parquet$", paste0("_part-", idx_start, ".parquet"), out_file))
     
-    # Adding to row counter
-    row <- chunk_rows + 1
+    # Increasing row index counter
+    idx_start <- idx_end + 1
   }
 }

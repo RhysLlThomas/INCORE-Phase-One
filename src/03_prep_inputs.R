@@ -24,18 +24,13 @@ families <- condition_details %>%
   pull(family) %>%
   unique()
 
-# Setting regression equation names for saving
+# Setting regression level and equation names for saving
+reg_level <- "person_year" # "admission" or "person_year"
 reg_names <- c("age_eq", "condition_eq", "family_age_eq", "family_pair_eq")
 
-# Setting input folder
+# Setting input and output folders
 indir <- file.path("data", "02_cleaned_data", "cleaned_data.parquet")
-
-# Creating output folders, if they don't already exist
 outdir <- file.path("data", "03_prepped_inputs")
-for (reg in reg_names){
-  dir.create(paste0(file.path(outdir, reg), ".parquet"),
-             recursive = TRUE)
-}
 
 # Loading dataset without reading fully into memory
 data <- open_dataset(indir)
@@ -62,18 +57,25 @@ for (i in 1:nrow(partitions)) {
   }
   
   # Creating regression matrices
-  reg_matrices <- create_reg_matrices(DT, years, ages, conditions, families)
+  reg_matrices <- create_reg_matrices(DT, years, ages, conditions, families, level=reg_level)
   
   # For each equation...
   for (reg in reg_names) {
+    
+    # Setting directory name and file name. Directory is unique for each
+    # regression level/equation while filename is unique for each year/age/sex
+    dir_name <- paste0(reg_level, "_", reg, ".parquet")
+    file_name <- paste0(paste(c(year, age, sex), collapse = '_'), '.parquet')
+    
+    # Create output directory for current regression equation
+    dir.create(file.path(outdir, dir_name),
+               recursive = TRUE)
     
     # Write out data in chunks, to help with memory usage
     # Defaults to 100,000 rows per chunk
     chunked_save(
       reg_matrices[[reg]],
-      file.path(outdir, paste0(reg, ".parquet"), paste0(paste(c(year, age, sex), collapse = '_'), '.parquet')))
+      file.path(outdir, dir_name, file_name))
   }
   
 }
-
-
