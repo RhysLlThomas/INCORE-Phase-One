@@ -368,6 +368,15 @@ get_conditions <- function(df, icd_cols, icd_condition_map){
     arrange(desc(count)) %>%
     write.csv(file.path("maps", "unmapped_icd_codes.csv"), row.names = FALSE)
   
+  # Saving out _gc data, for reference
+  mapped_data %>%
+    filter(condition == "_gc") %>%
+    group_by(icd_code) %>%
+    summarize(count = n(),
+              .groups = "drop") %>%
+    arrange(desc(count)) %>%
+    write.csv(file.path("maps", "gc_icd_codes.csv"), row.names = FALSE)
+  
   return(mapped_data)
 }
 
