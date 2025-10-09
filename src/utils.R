@@ -363,7 +363,8 @@ get_conditions <- function(df, icd_cols, icd_condition_map){
   # Saving out unmapped data, for reference
   unmapped_data %>%
     group_by(icd_code) %>%
-    summarise(count = n(), .groups = "drop") %>%
+    summarize(count = n(),
+              .groups = "drop") %>%
     arrange(desc(count)) %>%
     write.csv(file.path("maps", "unmapped_icd_codes.csv"), row.names = FALSE)
   
@@ -468,7 +469,8 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
   # Summarizing primary count proportions to be family specific
   fam_pc <- primary_counts %>%
     group_by(family, condition) %>%
-    summarize(n=sum(n)) %>%
+    summarize(n=sum(n),
+              .groups = "drop") %>%
     group_by(family) %>%
     mutate(tot_n=sum(n)) %>%
     ungroup() %>%
@@ -479,17 +481,19 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
     mutate(
       NEC_gc_flag = case_when(
         endsWith(condition, "_NEC") ~ "NEC",
-        condition=="_gc" ~ "gc"
+        condition=="_gc" ~ "gc")
       )
-    )
   
   
   # Reassigning NEC conditions to family-specific condition
   # Using family-specific proportions for random reassignment
   nec_joined <- df %>%
     filter(NEC_gc_flag == "NEC") %>%
-    left_join(condition_families, by = c("condition")) %>%
-    left_join(fam_pc, by = c("family"), relationship = "many-to-many")
+    left_join(condition_families,
+              by = c("condition")) %>%
+    left_join(fam_pc,
+              by = c("family"),
+              relationship = "many-to-many")
   
   # Finding rows that matched to a family in primary_counts
   nec_success <- nec_joined %>%
@@ -506,23 +510,28 @@ redistribute_conditions <- function(df, primary_counts, condition_families){
   # These proportions are NOT family-specific
   if (nrow(nec_fail) > 0) {
     nec_fail <- nec_fail %>%
-      left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship = "many-to-many")
+      left_join(primary_counts,
+                by = c("age_start", "sex_id", "year_id"),
+                relationship = "many-to-many")
   }
   
   # Combining all NEC rows and redistributing based on joined probabilities
   nec_rows <- bind_rows(nec_success, nec_fail) %>%
     group_by(admission_id, icd_level) %>%
-    summarize(condition = sample(condition.y, 1, prob = prop)) %>%
+    summarize(condition = sample(condition.y, 1, prob = prop),
+              .groups = "drop") %>%
     ungroup()
   
   # Reassigning _gc conditions to any condition
   # Using age/sex/year-specific proportions for probabilistic reassignment
   gc_rows <- df %>%
     filter(NEC_gc_flag=="gc") %>%
-    left_join(primary_counts, by = c("age_start", "sex_id", "year_id"), relationship="many-to-many") %>%
+    left_join(primary_counts,
+              by = c("age_start", "sex_id", "year_id"),
+              relationship="many-to-many") %>%
     group_by(admission_id, icd_level) %>%
-    summarize(
-      condition = sample(condition.y, 1, prob = prop) 
+    summarize(condition = sample(condition.y, 1, prob = prop),
+      .groups = "drop" 
     ) %>%
     ungroup()
   

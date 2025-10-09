@@ -1,9 +1,8 @@
 rm(list = ls())
 library(tidyverse)
 library(arrow)
-library(lubridate)
 library(tools)
-source('src/utils.R')
+source(file.path("src","utils.R"))
 
 #----------------------
 ##### USER INPUTS #####
@@ -78,7 +77,7 @@ dir.create(outdir, recursive = TRUE)
 
 # Read in raw data, using custom function to handle various file types
 # Supports reading .csv, .parquet, .dta, .sav, .sas7bdat, .xls, .xlsx, and .rds
-df <- read_data(filepath)
+df <- read_data(filepath)# %>% head(10000)
 
 # Subsetting data to specified columns only
 df <- subset_cols(df, select_cols=c(beneficiary_id_col, admission_id_cols, year_col, age_col, sex_col,

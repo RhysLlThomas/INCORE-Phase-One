@@ -1,7 +1,7 @@
 rm(list = ls())
 library(data.table)
 library(arrow)
-source('src/utils.R')
+source(file.path("src","utils.R"))
 
 #----------------
 ##### Setup #####
@@ -10,7 +10,7 @@ source('src/utils.R')
 # Getting all year/age/sex combinations
 # Ignoring age_start and sex_id values of -1, which are considered invalid
 years <- seq(2014, 2019, 1)
-ages <- read_feather("maps/age_groups.feather")$age_start
+ages <- read_feather(file.path("maps","age_groups.feather"))$age_start
 sexes <- c("M", "F")
 partitions <- expand.grid(year_id=years, age_start = ages, sex_id = sexes)
 
@@ -24,8 +24,9 @@ families <- condition_details %>%
   pull(family) %>%
   unique()
 
-# Setting regression level and equation names for saving
-reg_level <- "person_year" # "admission" or "person_year"
+# Setting regression level and equation names
+# Regression level should be specified as either "admission" or "person_year"
+reg_level <- "person_year"
 reg_names <- c("age_eq", "condition_eq", "family_age_eq", "family_pair_eq")
 
 # Setting input and output folders
@@ -68,8 +69,10 @@ for (i in 1:nrow(partitions)) {
     file_name <- paste0(paste(c(year, age, sex), collapse = '_'), '.parquet')
     
     # Create output directory for current regression equation
-    dir.create(file.path(outdir, dir_name),
-               recursive = TRUE)
+    if (!dir.exists(file.path(outdir, dir_name))) {
+      dir.create(file.path(outdir, dir_name),
+                 recursive = TRUE)
+      }
     
     # Write out data in chunks, to help with memory usage
     # Defaults to 100,000 rows per chunk

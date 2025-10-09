@@ -1,7 +1,7 @@
 rm(list = ls())
 library(tidyverse)
 library(arrow)
-source('src/utils.R')
+source(file.path("src","utils.R"))
 
 #----------------
 ##### Setup #####
