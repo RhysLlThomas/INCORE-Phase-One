@@ -140,6 +140,7 @@ The first step of `02_clean_data.R` is to assign a condition as the primary cond
 The second step is to redistribute any remaining non-specific conditions to specific conditions. In this step, only `_gc` and `*_NEC` conditions are redistributed. This process works by first finding the proportion of conditions assigned as primary (written out to `maps/primary_condition_proportions.parquet`). These proportions are then applied to resdistribute the remaining non-specific conditions. The redistribution process always uses year-age-sex specific proportions.
 
 - For `*_NEC` conditions, redistribution is based on condition family-specific proportions. That is, `*_NEC` conditions can only be redistributed to conditions within the same family.
+  - If family-specific proportions are not available, then the same logic used to redistribute `_gc` is applied. This means that `*_NEC` conditions can sometimes map to non-family-specific conditions.
 - For `_gc`, resdistribution is across all possible conditions. That is, `_gc` can be redistributed to any condition.
 
 This script will write out a partitioned parquet dataset to the `data/02_cleaned_data` folder.  As before, this data is long on condition, so it can be fairly large.
