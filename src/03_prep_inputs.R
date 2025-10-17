@@ -26,7 +26,7 @@ families <- condition_details %>%
 
 # Setting regression level and equation names
 # Regression level should be specified as either "admission" or "person_year"
-reg_level <- "person_year"
+reg_level <- "admission"
 reg_names <- c("age_eq", "condition_eq", "family_age_eq", "family_pair_eq")
 
 # Setting input and output folders
