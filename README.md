@@ -187,3 +187,7 @@ The maps folder contains a handful of key maps for use in this project.
   - A feather file that information about `*_NEC` conditions and their families, only used in `02_clean_data.R` to assist with the redistribution process
 - **primary_condition_proportions.parquet**
   - A parquet file that contains the year/age/sex specific proportions of each condition assigned as primary. This file will not be present until `02_clean_data.R` is run
+- **unmapped_icd_codes.csv**
+  - A csv file that contains any ICD codes that were unable to be mapped to conditions using the **icd_map.feather** file. This file will not be present until `01_transform_data.R` is run
+- **gc_icd_codes.csv**
+  - A csv file that contains any ICD codes that were mapped as `_gc` (garbage code) during the condition mapping process. This file will not be present until `01_transform_data.R` is run
