@@ -148,6 +148,9 @@ print(paste0("GLM coefficients saved for ", reg, " regression (sex: ", sex, ")!"
   stats_path_GLM <- file.path(outdir, "GLM_model_stats.csv")
   write.table(stats_df_GLM, stats_path_GLM, sep = ",", append = TRUE,
               row.names = FALSE, col.names = !file.exists(stats_path_GLM))
+
+  h2o.rm(data)
+  gc()
   
 }
 }
