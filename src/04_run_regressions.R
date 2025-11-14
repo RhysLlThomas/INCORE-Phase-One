@@ -18,14 +18,30 @@ indir <- file.path("data", "03_prepped_inputs")
 outdir <- file.path("results")
 dir.create(outdir, recursive = TRUE)
 
+sexes <- c("M", "F")
+
 for (reg in reg_names) {
   
   # Getting filename as combination of regression level and regression equation
   filename <- paste0(reg_level, "_", reg)
   
-  # Reading in prepared input
-  print(paste0("Loading data for ", reg_level, " ", reg, " regression."))
-  data <- h2o.importFile(path = file.path(indir, paste0(filename, ".parquet")))
+ # Loop over SEX 
+for (sex in sexes) {
+    print(paste0("Loading data for ", reg_level, " ", reg, " regression (sex: ", sex, ")."))
+
+    # Load only parquet files for this sex (pattern matches _M_ or _F_)
+    reg_dir <- file.path(indir, paste0(filename, ".parquet"))
+    all_files <- list.files(reg_dir,
+                            pattern = paste0("(_", sex, "_)|(_", sex, "\\.parquet$)"),
+                            full.names = TRUE)
+
+    if (length(all_files) == 0) {
+      print(paste0("No parquet files found for ", filename, " (sex: ", sex, "). Skipping."))
+      next
+    }
+
+    # Import all files for this sex into H2O
+    data <- h2o.importFile(path = all_files)
   
   # Setting predictors as all columns except "los"
   predictors <- setdiff(colnames(data), c("los"))
@@ -62,13 +78,20 @@ for (reg in reg_names) {
   # Adding cell counts to coefficient dataframe
   result_df_LASSO <- merge(result_df_LASSO, cell_counts_df, by = "names", all = TRUE)
   
-  # Save coefficients + counts
-  write.csv(result_df_LASSO, file.path(outdir, paste0(filename, "_coefs_LASSO.csv")), row.names = FALSE)
-  print(paste0("LASSO coefficients saved for ", reg, " regression!"))
+# Save cell counts and coefficients separately per sex
+ write.csv(cell_counts_df,
+            file.path(outdir, paste0(filename, "_", sex, "_cell_counts.csv")),
+            row.names = FALSE)
+
+write.csv(result_df_LASSO,
+              file.path(outdir, paste0(filename, "_", sex, "_coefs_LASSO.csv")),
+              row.names = FALSE)
+
+  print(paste0("LASSO coefficients saved for ", reg, " regression (sex: ", sex, ")!"))
   
   # Getting model statistics from fit model
   stats_df_LASSO <- data.frame(
-    model = filename,
+    model = paste0(filename, "_", sex),
     MSE = h2o.mse(fit_LASSO),
     RMSE = h2o.rmse(fit_LASSO),
     R2 = h2o.r2(fit_LASSO),
@@ -102,7 +125,7 @@ for (reg in reg_names) {
   
   # Getting model statistics from fit model
   stats_df_GLM <- data.frame(
-    model = filename,
+  model = paste0(filename, "_", sex),
     MSE = h2o.mse(fit_GLM),
     RMSE = h2o.rmse(fit_GLM),
     R2 = h2o.r2(fit_GLM),
@@ -114,4 +137,5 @@ for (reg in reg_names) {
   write.table(stats_df_GLM, stats_path_GLM, sep = ",", append = TRUE,
               row.names = FALSE, col.names = !file.exists(stats_path_GLM))
   
+}
 }
