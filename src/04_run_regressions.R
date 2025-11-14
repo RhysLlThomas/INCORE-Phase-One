@@ -67,19 +67,15 @@ if (length(all_files) > 1) {
   coefs <- h2o.coef(fit_LASSO)
   result_df_LASSO <- data.frame(fit_LASSO@model$coefficients_table)
   
-  # Get cell counts. Since columns are encoded as 0 or 1, the sum across all rows
-  # is equal to the cell count. Only the "n_admissions" column in person_year
-  # level regressions is not binary, and are instead positive integers
-  cell_counts <- as.vector(h2o.sum(data[predictors], return_frame=T))
-  
-  # Making cell counts dataframe. Using pmin to limit the cell counts to the 
-  # number of rows in the dataframe. This should only be relevant for the 
-  # "n_admissions" columns as noted above
-  cell_counts_df <- data.frame(
-    names = names(data[predictors]),
-    cell_count = pmin(cell_counts, nrow(data)),
-    stringsAsFactors = FALSE
-  )
+# Robust sex-specific cell counts computed inside H2O
+preds_h2o <- data[, predictors]
+col_sums_df <- as.data.frame(h2o.colSums(preds_h2o, na.rm = TRUE))
+cell_counts_vec <- as.numeric(col_sums_df[1, ])
+cell_counts_df <- data.frame(
+  names = colnames(preds_h2o),
+  cell_count = pmin(cell_counts_vec, as.numeric(h2o.nrow(data))),
+  stringsAsFactors = FALSE
+)
   
   # Adding cell counts to coefficient dataframe
   result_df_LASSO <- merge(result_df_LASSO, cell_counts_df, by = "names", all = TRUE)
@@ -109,25 +105,30 @@ write.csv(result_df_LASSO,
   write.table(stats_df_LASSO, stats_path_LASSO, sep = ",", append = TRUE,
               row.names = FALSE, col.names = !file.exists(stats_path_LASSO))
   
-  # Selecting predictors that were not dropped in LASSO regression
-  selected_predictors <- intersect(names(coefs[coefs!=0]), predictors)
-  
-  # Refitting a GLM model with selected predictors and no regularization
-  fit_GLM <- h2o.glm(
-    x = selected_predictors,
-    y = "los",
-    training_frame = data,
-    family = "gaussian",
-    lambda=0,
-    compute_p_values = TRUE
-  )
+# Selecting predictors that were not dropped in LASSO regression
+selected_predictors <- intersect(names(coefs[coefs != 0]), predictors)
+
+# If LASSO selected no predictors, skip GLM refit to avoid error
+if (length(selected_predictors) == 0) {
+  message("No predictors selected by LASSO for ", filename, " sex=", sex, " — skipping GLM.")
+  # LASSO outputs and cell counts are already saved; continue to next sex.
+  next
+}
+
+# Refitting a GLM model with selected predictors and no regularization
+fit_GLM <- h2o.glm(
+  x = selected_predictors,
+  y = "los",
+  training_frame = data,
+  family = "gaussian",
+  lambda = 0,
+  compute_p_values = TRUE
+)
   
 # Getting coefficients from fit model and making results dataframe
 result_df_GLM <- data.frame(fit_GLM@model$coefficients_table)
-+
 # Merge GLM coefficients with sex-specific cell counts (if predictor names match)
 result_df_GLM <- merge(result_df_GLM, cell_counts_df, by = "names", all.x = TRUE)
-+
 # Save sex-specific GLM coefficients + counts
 write.csv(result_df_GLM,
           file.path(outdir, paste0(filename, "_", sex, "_coefs_GLM.csv")),
