@@ -40,8 +40,14 @@ for (sex in sexes) {
       next
     }
 
-    # Import all files for this sex into H2O
-    data <- h2o.importFile(path = all_files)
+# Import all files for this sex into H2O robustly (import first then rbind remaining)
+data <- h2o.importFile(path = all_files[1])
+if (length(all_files) > 1) {
+  for (f in all_files[-1]) {
+    tmp <- h2o.importFile(path = f)
+    data <- h2o.rbind(data, tmp)
+  }
+}
   
   # Setting predictors as all columns except "los"
   predictors <- setdiff(colnames(data), c("los"))
@@ -116,12 +122,17 @@ write.csv(result_df_LASSO,
     compute_p_values = TRUE
   )
   
-  # Getting coefficients from fit model and making results dataframe
-  result_df_GLM <- data.frame(fit_GLM@model$coefficients_table)
-  
-  # Save coefficients + counts
-  write.csv(result_df_GLM, file.path(outdir, paste0(filename, "_coefs_GLM.csv")), row.names = FALSE)
-  print(paste0("GLM coefficients saved for ", reg, " regression!"))
+# Getting coefficients from fit model and making results dataframe
+result_df_GLM <- data.frame(fit_GLM@model$coefficients_table)
++
+# Merge GLM coefficients with sex-specific cell counts (if predictor names match)
+result_df_GLM <- merge(result_df_GLM, cell_counts_df, by = "names", all.x = TRUE)
++
+# Save sex-specific GLM coefficients + counts
+write.csv(result_df_GLM,
+          file.path(outdir, paste0(filename, "_", sex, "_coefs_GLM.csv")),
+          row.names = FALSE)
+print(paste0("GLM coefficients saved for ", reg, " regression (sex: ", sex, ")!"))
   
   # Getting model statistics from fit model
   stats_df_GLM <- data.frame(
