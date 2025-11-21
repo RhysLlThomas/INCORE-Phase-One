@@ -67,23 +67,27 @@ if (length(all_files) > 1) {
   coefs <- h2o.coef(fit_LASSO)
   result_df_LASSO <- data.frame(fit_LASSO@model$coefficients_table)
   
-# Robust sex-specific cell counts computed inside H2O
-preds_h2o <- data[, predictors]
-col_sums_df <- as.data.frame(h2o.colSums(preds_h2o, na.rm = TRUE))
-cell_counts_vec <- as.numeric(col_sums_df[1, ])
-cell_counts_df <- data.frame(
-  names = colnames(preds_h2o),
-  cell_count = pmin(cell_counts_vec, as.numeric(h2o.nrow(data))),
-  stringsAsFactors = FALSE
-)
-  
-  # Adding cell counts to coefficient dataframe
-  result_df_LASSO <- merge(result_df_LASSO, cell_counts_df, by = "names", all = TRUE)
-  
-# Save cell counts and coefficients separately per sex
- write.csv(cell_counts_df,
-            file.path(outdir, paste0(filename, "_", sex, "_cell_counts.csv")),
-            row.names = FALSE)
+  # Get cell counts for this sex.
+  # Convert the H2OFrame slice to an R data.frame, then use base::colSums.
+  preds_df <- as.data.frame(data[, predictors])
+
+  # Column sums (works for 0/1 dummies and counts). na.rm = TRUE to ignore NAs.
+  cell_counts_vec <- base::colSums(preds_df, na.rm = TRUE)
+
+  # Build cell-counts data.frame.
+  cell_counts_df <- data.frame(
+    names      = names(preds_df),
+    cell_count = pmin(cell_counts_vec, nrow(preds_df)),
+    stringsAsFactors = FALSE
+  )
+
+  # Save cell counts separately for this sex
+  write.csv(
+    cell_counts_df,
+    file.path(outdir, paste0(filename, "_", sex, "_cell_counts.csv")),
+    row.names = FALSE
+  )
+
 
 write.csv(result_df_LASSO,
               file.path(outdir, paste0(filename, "_", sex, "_coefs_LASSO.csv")),
